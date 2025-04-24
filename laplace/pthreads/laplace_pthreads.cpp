@@ -26,9 +26,12 @@
 typedef struct chunk{
     int id;
     int size;
+    // Identifies the 1D position of the first stencil
     long first_pos;
     // 'u' -> unselected, 'p' -> pending, 'c' -> computed
     char status;
+    // Stablishes the maximum error for this chunk
+    double local_err;
 } chunk_info;
 
 typedef struct thread_data{
@@ -44,7 +47,7 @@ int global_chunk_size;
 
 double *grid;
 double *new_grid;
-double total_error = 0.0f;
+double total_error = 1.0e-1f;
 
 pthread_mutex_t chunk_mutex;
 pthread_cond_t chunks_available,
@@ -124,10 +127,9 @@ void print_grid(int size) {
     }
 }
 
-int n_pos(chunk_info &ck) {
+int set_first_pos(chunk_info &ck) {
 
     int stencil_pos_int, stencil_pos, stencil_row, stencil_col, first_pos;
-    int temp;
 
     stencil_pos_int = (ck.size*ck.id);
     stencil_pos = size + 1 + stencil_pos_int/(size-2)*2 + stencil_pos_int;
@@ -137,7 +139,14 @@ int n_pos(chunk_info &ck) {
     return stencil_pos;
 }
 
+int get_n_pos(chunk_info ck, int n) {
+    int stencil_pos_int, stencil_pos, stencil_row, stencil_col, first_pos;
 
+    stencil_pos_int = (ck.size*ck.id);
+    stencil_pos = size + 1 + stencil_pos_int/(size-2)*2 + stencil_pos_int;
+
+    return stencil_pos;
+}
 
 void chunk_traverse(chunk_info ck) {
     
@@ -194,7 +203,7 @@ chunk_info* create_chunks(int n, int size) {
 
     for(int i = 0; i < n; i++) {
         chunks[i] = {i, chunk_size, 0, 'u'};
-        n_pos(chunks[i]);
+        set_first_pos(chunks[i]);
     }
     chunks[n-1].size += (total_points % chunk_size == 0 ? 0 : total_points % chunk_size);
 
@@ -209,6 +218,9 @@ void* producer(void *arg) {
     while(CONV_THRESHOLD < total_error) {
 
         computed_chunks = 0;    
+        iterations++;
+
+        printf("Producer Started\n");
 
         pthread_mutex_lock(&chunk_mutex);
 
@@ -218,30 +230,38 @@ void* producer(void *arg) {
             }
             
             // Resetando chunk para próxima iteração
-            for(int i = 0; i < ptd->n; i++)
+            for(int i = 0; i < ptd->n; i++) {
                 ptd->chunks[i].status = 'u';
+                total_error = max(total_error, ptd->chunks[i].local_err);
+                ptd->chunks[i].local_err = 1.0e-1f;
+            }
             
             reset_chunks = false;
             iterations++;
 
+            for(int i = 0; i < ptd->n; i++) {
+                printChunk(ptd->chunks[i]);
+                chunk_traverse(ptd->chunks[i]);
+            }
+
             pthread_cond_signal(&chunks_available);
         pthread_mutex_unlock(&chunk_mutex);
+
+        printf("Producer Finished\n");
     }
 
     return NULL;    
 }
 
-void compute_stencil(chunk_info thread_chunk) {
+double compute_stencil(chunk_info thread_chunk) {
     double err = 0.0;           // Correctude variables
-    int iter = 0;               // Iterator
 
     double *result = (double*)malloc(thread_chunk.size * sizeof(double));
     int stencil_row, stencil_col, stencil_pos_int, stencil_pos; 
 
     for(int i = 0; i < thread_chunk.size; i++) {
         
-        stencil_pos_int = (thread_chunk.size*thread_chunk.id + i);
-        stencil_pos = size + 1 + stencil_pos_int/(size-2)*2 + stencil_pos_int;
+        stencil_pos = get_n_pos(thread_chunk, i);
 
         stencil_row = stencil_pos / size;
         stencil_col = stencil_pos % size;
@@ -250,33 +270,46 @@ void compute_stencil(chunk_info thread_chunk) {
                             grid[ijTo1D(stencil_row + 1, stencil_col)] + 
                             grid[ijTo1D(stencil_row, stencil_col - 1)] + 
                             grid[ijTo1D(stencil_row, stencil_col + 1)]);
+
+        err = max(err, absolute(result[stencil_pos] - grid[stencil_pos]));
     }
 
+    // Escreve os resultados da computação no grid
     for(int i = 0; i < thread_chunk.size; i++) {
-        // grid
+        stencil_pos = get_n_pos(thread_chunk, i);
+        new_grid[stencil_pos] = result[stencil_pos]; 
     }
+
+    return err;
 }
 
 void* consumer(void * arg) {
 
     thread_data *t_data = (thread_data*) arg;
-    chunk_info t_chunk;
+    chunk_info *t_chunk;
     int done_chunks;
     bool compute;
+    double local_err;
+
+    printf("Threads daher\n");
 
     while(CONV_THRESHOLD < total_error) {
         
         done_chunks = 0;
         compute = true;
         
-        if(!reset_chunks) {
+        printf("Threads there\n");
 
+        if(!reset_chunks) {
+            printf("Threads here\n");
             pthread_mutex_lock(&chunk_mutex);
                 
                 for(int i = 0; i < t_data->n; i++) {
                     // Selects an available chunk
-                    if(t_data->chunks[i].status == 'c') {
-                        t_chunk = t_data->chunks[i];
+                    if(t_data->chunks[i].status == 'u') {
+                        t_chunk = &t_data->chunks[i];
+                        t_chunk->status = 'c';
+                        printf("%dth chunk for computing\n", t_chunk->id);
                     }
                     // Checks if all chunks were already processed. If so, signals to the
                     //      producer. 
@@ -288,31 +321,34 @@ void* consumer(void * arg) {
                 }
             pthread_mutex_unlock(&chunk_mutex);
 
-            if(compute)
-                compute_stencil(t_chunk);
-        }
+            // Calcula o chunk e anota o erro
+            if(compute) {
+                t_chunk->local_err = compute_stencil(*t_chunk);
+            }
+        }   
     }
     return NULL;
 }
 
 int main(int argc, char const *argv[]) {
     
-    if(argc < 2 || argc > 3) {
-        printf("Usage: ./laplace_pthreads N M\n");
-        printf("       N: The size of each side of the domain (grid)\n"
-               "       M: The number of threads\n");
+    if(argc != 3) {
+        printf("Usage: ./laplace_pthreads S N T\n");
+        printf("       S: The size of each side of the domain (grid)\n"
+               "       N: The number of chunks that divide the domain\n"
+               "       T: The number of threads\n");
         exit(-1);
     }
 
     // Gets the size of the grid as the first input during the program call
     size = atoi(argv[1]);
 
+    // Sets the number of chunks 
+    int n_chunks = atoi(argv[2]);
+
     // Gets the number of threads to be executed as the second program parameter
     int n_threads;
-    n_threads = atoi(argv[2]);
-
-    // Sets the number of chunks 
-    int n_chunks = 10;
+    n_threads = atoi(argv[3]);
 
     // Chunks storage variable used in the producer-consumer  
     chunk_info* chunks = create_chunks(n_chunks, size);
@@ -347,25 +383,25 @@ int main(int argc, char const *argv[]) {
 
 
     printf("Laplace execution starting with grid[%d][%d] and %d threads!\n", size, size, n_threads);
-    for(int i = 0; i < n_chunks; i++) {
-        printChunk(chunks[i]);
-        chunk_traverse(chunks[i]);
+
+    pthread_create(&producer_Thread, NULL, producer, (void*)thread_info);
+
+    for(int i = 0; i < n_threads; i++) {
+        pthread_create(&consumer_Threads[i], NULL, &consumer, (void*)chunks);
     }
 
-    // pthread_create(&producer_Thread, NULL, producer, (void*)thread_info);
-    // pthread_join(producer_Thread, NULL);
+    pthread_join(producer_Thread, NULL);
 
-    // for(int i = 0; i < n_threads; i++) {
-    //     pthread_create(&consumer_Threads[i], NULL, &consumer, (void*)chunks);
-    // }
-
-    // for(int i = 0; i < n_threads; i++) {
-    //     pthread_join(consumer_Threads[i], NULL);
-    // }
+    for(int i = 0; i < n_threads; i++) {
+        printf("Thread %d instantiated\n", i);
+        pthread_join(consumer_Threads[i], NULL);
+        
+    }
 
 
     // -------------------------------- Post-Processing Area --------------------------------
 
+    printf("After %d iterations, error is %d. Finished\n", iterations, total_error);
 
     // Deallocate the data 
     deallocate_memory();
