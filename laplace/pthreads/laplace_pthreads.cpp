@@ -16,6 +16,10 @@
 #include<time.h>
 #include<sys/time.h>
 
+#include<iostream>
+#include<vector>
+#include<string>
+
 #include<pthread.h>
 
 #define ITER_MAX 3000
@@ -37,6 +41,7 @@ typedef struct chunk{
 typedef struct thread_data{
     chunk_info *chunks;
     int n;
+    int id;
 }thread_data;
 
 // ------------------------------ Global variables ------------------------------
@@ -52,6 +57,7 @@ double total_error = 1.0e-1f;
 pthread_mutex_t chunk_mutex;
 pthread_cond_t chunks_available,
                chunks_unavailable;
+pthread_barrier_t barrier;
 
 bool reset_chunks = true;
 
@@ -170,23 +176,7 @@ void chunk_traverse(chunk_info ck) {
 }
 
 void printChunk(chunk_info ck) {
-    
-    printf("Chunk %d : {f_pos: %d, size: %d, state: %c}\n", ck.id, ck.first_pos, ck.size, ck.status);
-
-    // int stencil_pos_int, stencil_pos, stencil_row, stencil_col;
-
-    // for(int i = 0; i < ck.first_pos + ck.size; i++) {
-        
-    //     stencil_pos_int = (ck.first_pos + i);
-    //     stencil_pos = size + 1 + stencil_pos_int/(size-2)*2 + stencil_pos_int;
-
-    //     stencil_row = stencil_pos / size;
-    //     stencil_col = stencil_pos % size;
-        
-    //     if(i == 0 || i == ck.size-1)
-    //         printf("%s: %d (%d, %d) %c ", (i == 0 ? "start" : "end"), stencil_pos, stencil_row, 
-    //                 stencil_col, (i == 0 ? '|' : '\n'));
-    // }
+    printf("Chunk %d : {f_pos: %ld, size: %d, state: %c}\n", ck.id, ck.first_pos, ck.size, ck.status);
 }
 
 chunk_info* create_chunks(int n, int size) {
@@ -214,6 +204,8 @@ void* producer(void *arg) {
     
     thread_data *ptd = (thread_data*)arg;
     int computed_chunks;
+
+    pthread_barrier_wait(&barrier);
 
     while(CONV_THRESHOLD < total_error) {
 
@@ -265,20 +257,20 @@ double compute_stencil(chunk_info thread_chunk) {
 
         stencil_row = stencil_pos / size;
         stencil_col = stencil_pos % size;
-        
-        result[i] = 0.25 * (grid[ijTo1D(stencil_row - 1, stencil_col)] +
-                            grid[ijTo1D(stencil_row + 1, stencil_col)] + 
-                            grid[ijTo1D(stencil_row, stencil_col - 1)] + 
-                            grid[ijTo1D(stencil_row, stencil_col + 1)]);
 
-        err = max(err, absolute(result[stencil_pos] - grid[stencil_pos]));
+        // result[i] = 0.25 * (grid[ijTo1D(stencil_row - 1, stencil_col)] +
+        //                     grid[ijTo1D(stencil_row + 1, stencil_col)] + 
+        //                     grid[ijTo1D(stencil_row, stencil_col - 1)] + 
+        //                     grid[ijTo1D(stencil_row, stencil_col + 1)]);
+
+        // err = max(err, absolute(result[i] - grid[stencil_pos]));
     }
 
     // Escreve os resultados da computação no grid
-    for(int i = 0; i < thread_chunk.size; i++) {
-        stencil_pos = get_n_pos(thread_chunk, i);
-        new_grid[stencil_pos] = result[stencil_pos]; 
-    }
+    // for(int i = 0; i < thread_chunk.size; i++) {
+    //     stencil_pos = get_n_pos(thread_chunk, i);
+    //     new_grid[stencil_pos] = result[stencil_pos]; 
+    // }
 
     return err;
 }
@@ -291,25 +283,28 @@ void* consumer(void * arg) {
     bool compute;
     double local_err;
 
-    printf("Threads daher\n");
+    std::vector<std::string> buffer;
+    std::string temp;
+
+    pthread_barrier_wait(&barrier);
 
     while(CONV_THRESHOLD < total_error) {
         
         done_chunks = 0;
         compute = true;
-        
-        printf("Threads there\n");
 
         if(!reset_chunks) {
-            printf("Threads here\n");
             pthread_mutex_lock(&chunk_mutex);
-                
                 for(int i = 0; i < t_data->n; i++) {
                     // Selects an available chunk
+                    // printf("---<<<%d>>>---\n", (t_data->chunks[i].status == 'u'));
                     if(t_data->chunks[i].status == 'u') {
                         t_chunk = &t_data->chunks[i];
-                        t_chunk->status = 'c';
-                        printf("%dth chunk for computing\n", t_chunk->id);
+                        t_chunk->status = 'p';
+                        printf("Thread %d selected %dth chunk for computing\n", t_data->id, t_chunk->id);
+                        // temp = "Thread " + std::to_string(t_data->id) + " selected " + std::to_string(t_chunk->id) + "th chunk for computing"; 
+                        // buffer.push_back(temp);
+                        break;
                     }
                     // Checks if all chunks were already processed. If so, signals to the
                     //      producer. 
@@ -323,6 +318,8 @@ void* consumer(void * arg) {
 
             // Calcula o chunk e anota o erro
             if(compute) {
+                printf("Thread %d computed the %dth chunk\n", t_data->id, t_chunk->id);
+                getchar();
                 t_chunk->local_err = compute_stencil(*t_chunk);
             }
         }   
@@ -332,7 +329,7 @@ void* consumer(void * arg) {
 
 int main(int argc, char const *argv[]) {
     
-    if(argc != 3) {
+    if(argc != 4) {
         printf("Usage: ./laplace_pthreads S N T\n");
         printf("       S: The size of each side of the domain (grid)\n"
                "       N: The number of chunks that divide the domain\n"
@@ -355,12 +352,16 @@ int main(int argc, char const *argv[]) {
 
     // Thread variables
     pthread_t consumer_Threads[n_threads];
-    pthread_t producer_Thread;
+    pthread_t producer_Thread;    
 
     // Thread information variable (shared between all threads)
-    thread_data *thread_info = new thread_data; 
-    thread_info->chunks = chunks; 
-    thread_info->n = n_chunks;
+    thread_data *thread_info = new thread_data[n_threads+1]; 
+    thread_info[0] = {chunks, n_chunks, 0};
+
+    for(int i = 0; i <= n_threads; i++) {
+        thread_info[i] = thread_info[0];
+        thread_info[i].id = i;
+    }
 
 
     // -------------------------------- Pre-Processing Area --------------------------------
@@ -384,36 +385,31 @@ int main(int argc, char const *argv[]) {
 
     printf("Laplace execution starting with grid[%d][%d] and %d threads!\n", size, size, n_threads);
 
-    pthread_create(&producer_Thread, NULL, producer, (void*)thread_info);
+    pthread_barrier_init(&barrier, NULL, n_threads + 1);
 
-    for(int i = 0; i < n_threads; i++) {
-        pthread_create(&consumer_Threads[i], NULL, &consumer, (void*)chunks);
+    pthread_create(&producer_Thread, NULL, producer, (void*)&(thread_info[0]));
+
+    for(int i = 1; i <= n_threads; i++) {
+        pthread_create(&consumer_Threads[i], nullptr, &consumer, (void*)&(thread_info[i]));
     }
 
-    pthread_join(producer_Thread, NULL);
+    pthread_barrier_wait(&barrier);
+    pthread_barrier_destroy(&barrier);
 
-    for(int i = 0; i < n_threads; i++) {
-        printf("Thread %d instantiated\n", i);
-        pthread_join(consumer_Threads[i], NULL);
-        
+    for(int i = 0; i <= n_threads; i++) {
+        if(i == 0)
+            pthread_join(producer_Thread, NULL);
+        else
+            pthread_join(consumer_Threads[i], NULL);
     }
 
 
     // -------------------------------- Post-Processing Area --------------------------------
 
-    printf("After %d iterations, error is %d. Finished\n", iterations, total_error);
+    printf("After %d iterations, error is %f. Finished\n", iterations, total_error);
 
     // Deallocate the data 
     deallocate_memory();
 
     return 0;
 }
-
-/* 
-
-Code Sources
-
-[1] https://stackoverflow.com/questions/36890624/malloc-a-2d-array-in-c
-[2] https://stackoverflow.com/questions/15937309/errorpe513-a-value-of-type-void-cannot-be-assigned-to-an-entity-of-type
-
-*/
