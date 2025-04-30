@@ -2,10 +2,10 @@ Bootstrap: docker
 From: ufscar/ubuntu_mpich:latest
 
 %help
-    Matrix-Matrix multiplication application to excute on openHPC UFSCar cluster
+    Pi calculation via approximate integral area to excute on openHPC UFSCar cluster
 
 %files
-   ./app/. /opt
+   ./. /opt
 
 %post
     echo "Compiling programs..."
