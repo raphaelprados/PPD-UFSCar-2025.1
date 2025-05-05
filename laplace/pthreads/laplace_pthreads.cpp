@@ -31,12 +31,9 @@
 typedef struct chunk{
     int id;
     int size;
-    // Identifies the 1D position of the first stencil
-    long first_pos;
-    // 'u' -> unselected, 'p' -> pending, 'c' -> computed
-    char status;
-    // Stablishes the maximum error for this chunk
-    double local_err;
+    long first_pos;                     // Identifies the 1D position of the first stencil
+    char status;                        // 'u' -> unselected, 'p' -> pending, 'c' -> computed
+    double local_err;                   // Stablishes the maximum error for this chunk
 } chunk_info;
 
 typedef struct thread_data{
@@ -244,12 +241,13 @@ void* producer(void *arg) {
                 new_grid = temp;
             }
 
-            pthread_cond_signal(&chunks_available);
 
+            pthread_cond_signal(&chunks_available);
             
             printf("Iteration %d finished with %.16lf error\n", iterations, total_error);
+
             // print_grid(size);
-            // getchar();
+            getchar();
 
             pthread_cond_signal(&chunks_available);
         pthread_mutex_unlock(&chunk_mutex);
@@ -287,6 +285,14 @@ double compute_stencil(chunk_info thread_chunk) {
         //         stencil_row, stencil_col - 1, grid[ijTo1D(stencil_row, stencil_col - 1)],
         //         stencil_row, stencil_col + 1, grid[ijTo1D(stencil_row, stencil_col + 1)],
         //         result[i], err);
+
+        printf("(%d, %d) Result[%d][%d] = 0.25 * ([%d][%d] + [%d][%d] + [%d][%d] + [%d][%d]) = %lf (err: %lf)\n",
+                iterations, thread_chunk.id, stencil_row, stencil_col,
+                stencil_row - 1, stencil_col,
+                stencil_row + 1, stencil_col,
+                stencil_row, stencil_col - 1,
+                stencil_row, stencil_col + 1,
+                result[i], err);
     }
 
     // Escreve os resultados da computação no grid
