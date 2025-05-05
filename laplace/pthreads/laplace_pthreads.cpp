@@ -50,12 +50,14 @@ typedef struct thread_data{
 int size;
 int iterations = -1;
 int global_chunk_size;
+int completed_chunks;
 
 double *grid;
 double *new_grid;
 double total_error = 1.0;
 
-pthread_mutex_t chunk_mutex;
+pthread_mutex_t chunk_mutex,
+                update_mutex;
 pthread_cond_t chunks_available,
                chunks_unavailable;
 pthread_barrier_t barrier;
@@ -216,51 +218,41 @@ void* producer(void *arg) {
         computed_chunks = 0;    
         iterations++;
 
-        // printf("Producer Started\n");
-
         pthread_mutex_lock(&chunk_mutex);
 
             // Uses a thread_cond to check whether it's time to reset the chunks
-            while(!reset_chunks) {
+            while(completed_chunks < ptd->n) {
                 pthread_cond_wait(&chunks_unavailable, &chunk_mutex);
             }
-            
-            // print_grid(size);
-            // getchar();
             
             total_error = 1.1e-5f;
             // Obtendo erro total e resetando chunk para próxima iteração
             for(int i = 0; i < ptd->n; i++) {
                 total_error = max(total_error, ptd->chunks[i].local_err);
 
-                // printf("Chunk %d computed with error %.6lf agains %.6lf\n", i, ptd->chunks[i].local_err, total_error);
-
                 ptd->chunks[i].status = 'u';
                 ptd->chunks[i].local_err = 1.1e-5f;
             }
-
-            // save_grid();
             
-            reset_chunks = false;
-            // iterations++;
+            completed_chunks = 0;
 
             // Array swapping for the next iteration
             if(iterations > 0) {
                 double *temp;
                 temp = grid;
                 grid = new_grid;
+                new_grid = temp;
             }
 
-            printf("Iteration %d finished with %.16lf error\n", iterations, total_error);
-            print_grid(size);
-            getchar();
+            pthread_cond_signal(&chunks_available);
 
+            
+            printf("Iteration %d finished with %.16lf error\n", iterations, total_error);
+            // print_grid(size);
             // getchar();
 
             pthread_cond_signal(&chunks_available);
         pthread_mutex_unlock(&chunk_mutex);
-
-        // printf("Producer Finished\n");
     }
 
     printf("Producer finished\n");
@@ -288,16 +280,14 @@ double compute_stencil(chunk_info thread_chunk) {
 
         err = max(err, absolute(result[i] - grid[stencil_pos]));
 
-        printf("(%d, %d) Result[%d][%d] = 0.25 * ([%d][%d] (%.2lf), [%d][%d] (%.2lf), [%d][%d] (%.2lf), [%d][%d] (%.2lf)) = %lf (err: %lf)\n",
-                iterations, thread_chunk.id, stencil_col, stencil_row, 
-                stencil_row - 1, stencil_col, grid[ijTo1D(stencil_row - 1, stencil_col)],
-                stencil_row + 1, stencil_col, grid[ijTo1D(stencil_row + 1, stencil_col)],
-                stencil_row, stencil_col - 1, grid[ijTo1D(stencil_row, stencil_col - 1)],
-                stencil_row, stencil_col + 1, grid[ijTo1D(stencil_row, stencil_col + 1)],
-                result[i], err);
+        // printf("(%d, %d) Result[%d][%d] = 0.25 * ([%d][%d] (%.2lf), [%d][%d] (%.2lf), [%d][%d] (%.2lf), [%d][%d] (%.2lf)) = %lf (err: %lf)\n",
+        //         iterations, thread_chunk.id, stencil_col, stencil_row, 
+        //         stencil_row - 1, stencil_col, grid[ijTo1D(stencil_row - 1, stencil_col)],
+        //         stencil_row + 1, stencil_col, grid[ijTo1D(stencil_row + 1, stencil_col)],
+        //         stencil_row, stencil_col - 1, grid[ijTo1D(stencil_row, stencil_col - 1)],
+        //         stencil_row, stencil_col + 1, grid[ijTo1D(stencil_row, stencil_col + 1)],
+        //         result[i], err);
     }
-
-    // getchar();
 
     // Escreve os resultados da computação no grid
     for(int i = 0; i < thread_chunk.size; i++) {
@@ -312,8 +302,6 @@ void* consumer(void * arg) {
 
     thread_data *t_data = (thread_data*) arg;
     chunk_info *t_chunk;
-    int done_chunks;
-    bool compute;
     double local_err;
 
     std::vector<std::string> buffer;
@@ -321,46 +309,37 @@ void* consumer(void * arg) {
 
     pthread_barrier_wait(&barrier);
 
-    printf("Consumer %d started\n", t_data->id);
+    // printf("Consumer %d started\n", t_data->id);
 
     while(CONV_THRESHOLD < total_error && iterations < ITER_MAX) {
-        
-        done_chunks = 0;
-        compute = true;
 
-        if(!reset_chunks) {
+        if(completed_chunks < t_data->n) {
+            // Checks if all chunks were already processed. If so, signals to the
+            //      producer.             
+            
             pthread_mutex_lock(&chunk_mutex);
-                done_chunks = 0;
                 for(int i = 0; i < t_data->n; i++) {
                     // Selects an available chunk
-                    // printf("---<<<%d>>>---\n", (t_data->chunks[i].status == 'u'));
                     if(t_data->chunks[i].status == 'u') {
                         t_chunk = &t_data->chunks[i];
                         t_chunk->status = 'p';
-                        // printf("Thread %d selected %dth chunk for computing\n", t_data->id, t_chunk->id);
-                        // temp = "Thread " + std::to_string(t_data->id) + " selected " + std::to_string(t_chunk->id) + "th chunk for computing"; 
-                        // buffer.push_back(temp);
                         break;
-                    } else {
-                        done_chunks++;
-                    }
-                    // Checks if all chunks were already processed. If so, signals to the
-                    //      producer. 
-                    if(done_chunks == t_data->n) {
-                        pthread_cond_signal(&chunks_unavailable);
-                        // printf("Signal Condition Full\n");
-                        reset_chunks = true;
-                        compute = false;
                     }
                 }
             pthread_mutex_unlock(&chunk_mutex);
 
             // Calcula o chunk e anota o erro
-            if(compute) {
-                // printf("Thread %d computed the %dth chunk\n", t_data->id, t_chunk->id);
-                // getchar();
-                t_chunk->local_err = compute_stencil(*t_chunk);
-            }
+            
+            t_chunk->local_err = compute_stencil(*t_chunk);
+
+            pthread_mutex_lock(&update_mutex);
+                completed_chunks++;
+            pthread_mutex_unlock(&update_mutex);
+
+            if(completed_chunks == t_data->n)
+                pthread_cond_signal(&chunks_unavailable);
+            else
+                pthread_cond_signal(&chunks_available);
         }   
     }
 
