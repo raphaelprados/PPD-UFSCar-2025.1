@@ -20,6 +20,7 @@
 #include<fstream>
 #include<vector>
 #include<string>
+#include<chrono>
 
 #include<pthread.h>
 
@@ -46,9 +47,10 @@ typedef struct thread_data{
 
 int size;
 int n_chunks;
-int iterations = -1;
+int iterations = 0;
 int global_chunk_size;
 int completed_chunks;
+int current_chunk = 0;
 
 double *grid;
 double *new_grid;
@@ -99,7 +101,7 @@ void allocate_memory(){
 }
 
 void deallocate_memory(){
-    printf("Dealocating\n");
+    // printf("Dealocating\n");
     free(grid);
     free(new_grid);
 }
@@ -202,66 +204,28 @@ chunk_info* create_chunks(int n, int size) {
     return chunks;
 }
 
-void* producer(void *arg) {
+void producer(thread_data *ptd) {
     
-    thread_data *ptd = (thread_data*)arg;
-    double max_error;
-    int computed_chunks;
     int i, j;
 
-    pthread_barrier_wait(&barrier);
+    // Obtendo erro total e resetando chunk para próxima iteração
+    total_error = 0.0;
+    for(int i = 0; i < ptd->n; i++) {
+        total_error = max(total_error, ptd->chunks[i].local_err);
 
-    while(CONV_THRESHOLD < total_error && iterations < ITER_MAX) {
-
-        computed_chunks = 0;    
-        iterations++;
-
-        // printf("Producer entered mutex\n");
-
-        pthread_mutex_lock(&chunk_mutex);
-
-            // Uses a thread_cond to check whether it's time to reset the chunks
-            while(completed_chunks < ptd->n) {
-                pthread_cond_wait(&chunks_unavailable, &chunk_mutex);
-            }
-            
-            total_error = 1.1e-5f;
-            // Obtendo erro total e resetando chunk para próxima iteração
-            for(int i = 0; i < ptd->n; i++) {
-                total_error = max(total_error, ptd->chunks[i].local_err);
-
-                ptd->chunks[i].status = 'u';
-                ptd->chunks[i].local_err = 1.1e-5f;
-            }
-            
-            completed_chunks = 0;
-
-            // Array swapping for the next iteration
-            if(iterations > 0) {
-                double *temp;
-                temp = grid;
-                grid = new_grid;
-                new_grid = temp;
-            }
-
-            allow_thread_processing = true;
-
-            pthread_cond_signal(&chunks_available);
-            
-            printf("Iteration %d finished with %.16lf error\n", iterations, total_error);
-
-            // print_grid(size);
-            // getchar();
-
-            pthread_cond_signal(&chunks_available);
-        pthread_mutex_unlock(&chunk_mutex);
-
-        // printf("Producer left mutex\n");
+        ptd->chunks[i].local_err = 0.0;
     }
 
-    printf("Producer finished\n");
-
-    return NULL;    
+    // Array swapping for the next iteration
+    double *temp;
+    temp = grid;
+    grid = new_grid;
+    new_grid = temp;
+    
+    // Reseting variables an updating for the next iteration
+    completed_chunks = 0;    
+    current_chunk = 0;
+    iterations++;
 }
 
 double compute_stencil(chunk_info thread_chunk) {
@@ -303,52 +267,32 @@ void* consumer(void * arg) {
     chunk_info *t_chunk;
     double local_err;
 
-    std::vector<std::string> buffer;
-    std::string temp;
+    bool allow_computing;
 
     pthread_barrier_wait(&barrier);
 
-    // printf("Consumer %d started\n", t_data->id);
-
     while(CONV_THRESHOLD < total_error && iterations < ITER_MAX) {
 
-        if(completed_chunks < t_data->n) {
-            // Checks if all chunks were already processed. If so, signals to the
-            //      producer.  
+        allow_computing = false;
 
-            
-
-            pthread_mutex_lock(&chunk_mutex);
-                for(int i = 0; i < t_data->n; i++) {
-                    // Selects an available chunk
-                    if(t_data->chunks[i].status == 'u') {
-                        // printf("Consumer %d selected the %dth chunk\n", t_data->id, i);
-                        t_chunk = &t_data->chunks[i];
-                        t_chunk->status = 'p';
-                        break;
-                    }
-                }
-            pthread_mutex_unlock(&chunk_mutex);
-            // printf("Consumer %d left mutex\n", t_data->id);
-
-            // Calcula o chunk e anota o erro
-            
+        pthread_mutex_lock(&chunk_mutex);
+            if(current_chunk != n_chunks) {
+                allow_computing = true;
+                t_chunk = &t_data->chunks[current_chunk];
+                current_chunk++;
+            } else if(completed_chunks == n_chunks) {
+                producer(t_data);
+            }
+        pthread_mutex_unlock(&chunk_mutex);
+        
+        if(allow_computing) {
             t_chunk->local_err = compute_stencil(*t_chunk);
-
+        
             pthread_mutex_lock(&chunk_mutex);
                 completed_chunks++;
             pthread_mutex_unlock(&chunk_mutex);
-
-            if(completed_chunks == t_data->n)
-                pthread_cond_signal(&chunks_unavailable);
-            else {
-                // printf("Thread signaling\n", t_data->id);
-                pthread_cond_signal(&chunks_available);
-            }
-        }   
+        }
     }
-
-    printf("Consumer %d finished\n", t_data->id);
 
     return NULL;
 }
@@ -387,6 +331,10 @@ int main(int argc, char const *argv[]) {
     thread_data *thread_info = new thread_data[n_threads+1]; 
     thread_info[0] = {chunks, n_chunks, 0};
 
+    clock_t begin, end;
+    double execution_time;
+
+    // Initializing thread information
     for(int i = 0; i <= n_threads; i++) {
         thread_info[i] = thread_info[0];
         thread_info[i].id = i;
@@ -415,32 +363,28 @@ int main(int argc, char const *argv[]) {
 
     printf("Laplace execution starting with grid[%d][%d] and %d threads!\n", size, size, n_threads);
 
-    pthread_barrier_init(&barrier, NULL, n_threads + 2);
+    pthread_barrier_init(&barrier, NULL, n_threads);
 
-    pthread_create(&producer_Thread, NULL, producer, (void*)&(thread_info[0]));
+    begin = clock();
 
     for(int i = 1; i <= n_threads; i++) {
-        printf("Thread %d created\n", thread_info[i].id);
+        // printf("Thread %d created\n", thread_info[i].id);
         pthread_create(&consumer_Threads[i], nullptr, &consumer, (void*)&(thread_info[i]));
     }
 
-    pthread_barrier_wait(&barrier);
+    for(int i = 1; i <= n_threads; i++) 
+        pthread_join(consumer_Threads[i], NULL);
 
-    pthread_join(producer_Thread, NULL);
-
-    for(int i = 0; i <= n_threads; i++) 
-        pthread_join(producer_Thread, NULL);
-
-    pthread_barrier_destroy(&barrier);
+    end = clock();
 
     // -------------------------------- Post-Processing Area --------------------------------
 
-    printf("After %d iterations, error is %f. Finished\n", iterations, total_error);
+    printf("After %d iterations, error is %.16f. Execution time is %.4lf seconds\n", iterations, total_error, (double)(end - begin)/CLOCKS_PER_SEC);
 
     // Deallocate the data 
     deallocate_memory();
 
-    printf("Finished deallocation");
+    // printf("Finished deallocation\n");
 
     return 0;
 }
