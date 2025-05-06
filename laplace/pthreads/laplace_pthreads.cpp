@@ -424,16 +424,12 @@ int main(int argc, char const *argv[]) {
         pthread_create(&consumer_Threads[i], nullptr, &consumer, (void*)&(thread_info[i]));
     }
 
-    // printf("I'm still here");
-
     pthread_barrier_wait(&barrier);
 
     pthread_join(producer_Thread, NULL);
 
     for(int i = 0; i <= n_threads; i++) 
         pthread_join(producer_Thread, NULL);
-
-    // printf("I'm here\n");
 
     pthread_barrier_destroy(&barrier);
 
