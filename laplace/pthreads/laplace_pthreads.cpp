@@ -45,6 +45,7 @@ typedef struct thread_data{
 // ------------------------------ Global variables ------------------------------
 
 int size;
+int n_chunks;
 int iterations = -1;
 int global_chunk_size;
 int completed_chunks;
@@ -59,7 +60,7 @@ pthread_cond_t chunks_available,
                chunks_unavailable;
 pthread_barrier_t barrier;
 
-bool reset_chunks = true;
+bool allow_thread_processing = false;
 
 // ------------------------------ Utilitary functions ------------------------------
 
@@ -146,10 +147,10 @@ int set_first_pos(chunk_info &ck) {
     return stencil_pos;
 }
 
-int get_n_pos(chunk_info ck, int n) {
+int get_n_pos(int ck_size, int ck_id, int n) {
     int stencil_pos_int, stencil_pos, stencil_row, stencil_col, first_pos;
 
-    stencil_pos_int = (ck.size*ck.id+n);
+    stencil_pos_int = (ck_size*ck_id+n);
     stencil_pos = size + 1 + stencil_pos_int/(size-2)*2 + stencil_pos_int;
 
     return stencil_pos;
@@ -215,6 +216,8 @@ void* producer(void *arg) {
         computed_chunks = 0;    
         iterations++;
 
+        // printf("Producer entered mutex\n");
+
         pthread_mutex_lock(&chunk_mutex);
 
             // Uses a thread_cond to check whether it's time to reset the chunks
@@ -241,16 +244,19 @@ void* producer(void *arg) {
                 new_grid = temp;
             }
 
+            allow_thread_processing = true;
 
             pthread_cond_signal(&chunks_available);
             
             printf("Iteration %d finished with %.16lf error\n", iterations, total_error);
 
             // print_grid(size);
-            getchar();
+            // getchar();
 
             pthread_cond_signal(&chunks_available);
         pthread_mutex_unlock(&chunk_mutex);
+
+        // printf("Producer left mutex\n");
     }
 
     printf("Producer finished\n");
@@ -264,9 +270,11 @@ double compute_stencil(chunk_info thread_chunk) {
     double *result = (double*)malloc(thread_chunk.size * sizeof(double));
     int stencil_row, stencil_col, stencil_pos_int, stencil_pos; 
 
+    int chunk_size = (((size-2)*(size-2))/n_chunks);
+
     for(int i = 0; i < thread_chunk.size; i++) {
         
-        stencil_pos = get_n_pos(thread_chunk, i);
+        stencil_pos = get_n_pos(chunk_size, thread_chunk.id, i);
 
         stencil_row = stencil_pos / size;
         stencil_col = stencil_pos % size;
@@ -278,26 +286,11 @@ double compute_stencil(chunk_info thread_chunk) {
 
         err = max(err, absolute(result[i] - grid[stencil_pos]));
 
-        // printf("(%d, %d) Result[%d][%d] = 0.25 * ([%d][%d] (%.2lf), [%d][%d] (%.2lf), [%d][%d] (%.2lf), [%d][%d] (%.2lf)) = %lf (err: %lf)\n",
-        //         iterations, thread_chunk.id, stencil_col, stencil_row, 
-        //         stencil_row - 1, stencil_col, grid[ijTo1D(stencil_row - 1, stencil_col)],
-        //         stencil_row + 1, stencil_col, grid[ijTo1D(stencil_row + 1, stencil_col)],
-        //         stencil_row, stencil_col - 1, grid[ijTo1D(stencil_row, stencil_col - 1)],
-        //         stencil_row, stencil_col + 1, grid[ijTo1D(stencil_row, stencil_col + 1)],
-        //         result[i], err);
-
-        printf("(%d, %d) Result[%d][%d] = 0.25 * ([%d][%d] + [%d][%d] + [%d][%d] + [%d][%d]) = %lf (err: %lf)\n",
-                iterations, thread_chunk.id, stencil_row, stencil_col,
-                stencil_row - 1, stencil_col,
-                stencil_row + 1, stencil_col,
-                stencil_row, stencil_col - 1,
-                stencil_row, stencil_col + 1,
-                result[i], err);
     }
 
     // Escreve os resultados da computação no grid
     for(int i = 0; i < thread_chunk.size; i++) {
-        stencil_pos = get_n_pos(thread_chunk, i);
+        stencil_pos = get_n_pos(chunk_size, thread_chunk.id, i);
         new_grid[stencil_pos] = result[i]; 
     }
 
@@ -321,31 +314,37 @@ void* consumer(void * arg) {
 
         if(completed_chunks < t_data->n) {
             // Checks if all chunks were already processed. If so, signals to the
-            //      producer.             
+            //      producer.  
+
             
+
             pthread_mutex_lock(&chunk_mutex);
                 for(int i = 0; i < t_data->n; i++) {
                     // Selects an available chunk
                     if(t_data->chunks[i].status == 'u') {
+                        // printf("Consumer %d selected the %dth chunk\n", t_data->id, i);
                         t_chunk = &t_data->chunks[i];
                         t_chunk->status = 'p';
                         break;
                     }
                 }
             pthread_mutex_unlock(&chunk_mutex);
+            // printf("Consumer %d left mutex\n", t_data->id);
 
             // Calcula o chunk e anota o erro
             
             t_chunk->local_err = compute_stencil(*t_chunk);
 
-            pthread_mutex_lock(&update_mutex);
+            pthread_mutex_lock(&chunk_mutex);
                 completed_chunks++;
-            pthread_mutex_unlock(&update_mutex);
+            pthread_mutex_unlock(&chunk_mutex);
 
             if(completed_chunks == t_data->n)
                 pthread_cond_signal(&chunks_unavailable);
-            else
+            else {
+                // printf("Thread signaling\n", t_data->id);
                 pthread_cond_signal(&chunks_available);
+            }
         }   
     }
 
@@ -368,7 +367,7 @@ int main(int argc, char const *argv[]) {
     size = atoi(argv[1]);
 
     // Sets the number of chunks 
-    int n_chunks = atoi(argv[2]);
+    n_chunks = atoi(argv[2]);
 
     // Gets the number of threads to be executed as the second program parameter
     int n_threads;
@@ -409,6 +408,8 @@ int main(int argc, char const *argv[]) {
     pthread_cond_init(&chunks_available, NULL);
     pthread_cond_init(&chunks_unavailable, NULL);
 
+    int chunk_size = ((size-2)*(size-2))/n_chunks;
+
     // -------------------------------- Processing Area --------------------------------
 
 
@@ -423,12 +424,16 @@ int main(int argc, char const *argv[]) {
         pthread_create(&consumer_Threads[i], nullptr, &consumer, (void*)&(thread_info[i]));
     }
 
+    // printf("I'm still here");
+
     pthread_barrier_wait(&barrier);
 
     pthread_join(producer_Thread, NULL);
 
     for(int i = 0; i <= n_threads; i++) 
         pthread_join(producer_Thread, NULL);
+
+    // printf("I'm here\n");
 
     pthread_barrier_destroy(&barrier);
 
