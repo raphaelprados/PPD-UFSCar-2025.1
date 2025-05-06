@@ -47,6 +47,7 @@ typedef struct thread_data{
 
 int size;
 int n_chunks;
+int n_threads;
 int iterations = 0;
 int global_chunk_size;
 int completed_chunks;
@@ -212,8 +213,14 @@ void producer(thread_data *ptd) {
     total_error = 0.0;
     for(int i = 0; i < ptd->n; i++) {
         total_error = max(total_error, ptd->chunks[i].local_err);
-
+        // printf("Chunk[%d].error = %.10lf\n", i, ptd->chunks[i].local_err);
         ptd->chunks[i].local_err = 0.0;
+    }
+
+    if(0) {
+        printf("Finished %dth iteration with %.10lf error\n", iterations, total_error);
+        // print_grid(size);
+        getchar();
     }
 
     // Array swapping for the next iteration
@@ -267,30 +274,16 @@ void* consumer(void * arg) {
     chunk_info *t_chunk;
     double local_err;
 
-    bool allow_computing;
-
-    pthread_barrier_wait(&barrier);
-
     while(CONV_THRESHOLD < total_error && iterations < ITER_MAX) {
 
-        allow_computing = false;
+        for(int i = 0 + (t_data->id - 1); i < t_data->n; i += n_threads) 
+            t_data->chunks[i].local_err = compute_stencil(t_data->chunks[i]);
+        
+        
+        pthread_barrier_wait(&barrier);
 
-        pthread_mutex_lock(&chunk_mutex);
-            if(current_chunk != n_chunks) {
-                allow_computing = true;
-                t_chunk = &t_data->chunks[current_chunk];
-                current_chunk++;
-            } else if(completed_chunks == n_chunks) {
-                producer(t_data);
-            }
-        pthread_mutex_unlock(&chunk_mutex);
-        
-        if(allow_computing) {
-            t_chunk->local_err = compute_stencil(*t_chunk);
-        
-            pthread_mutex_lock(&chunk_mutex);
-                completed_chunks++;
-            pthread_mutex_unlock(&chunk_mutex);
+        if(t_data->id == 1) {
+            producer(t_data);
         }
     }
 
@@ -314,7 +307,6 @@ int main(int argc, char const *argv[]) {
     n_chunks = atoi(argv[2]);
 
     // Gets the number of threads to be executed as the second program parameter
-    int n_threads;
     n_threads = atoi(argv[3]);
 
     // Chunks storage variable used in the producer-consumer  
@@ -379,7 +371,7 @@ int main(int argc, char const *argv[]) {
 
     // -------------------------------- Post-Processing Area --------------------------------
 
-    printf("After %d iterations, error is %.16f. Execution time is %.4lf seconds\n", iterations, total_error, (double)(end - begin)/CLOCKS_PER_SEC);
+    printf("After %d iterations, error is %.16f. Execution time is %.6lf seconds\n", iterations, total_error, (double)(end - begin)/CLOCKS_PER_SEC);
 
     // Deallocate the data 
     deallocate_memory();
