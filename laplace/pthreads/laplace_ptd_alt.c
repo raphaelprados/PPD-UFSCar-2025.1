@@ -11,8 +11,11 @@
     https://github.com/HPCSys-Lab/HPC-101/tree/main/examples/laplace
 */
 
+#define _XOPEN_SOURCE 600
+
 #include<stdio.h>
 #include<stdlib.h>
+#include<stdbool.h>
 #include<time.h>
 #include<sys/time.h>
 #include<pthread.h>
@@ -50,13 +53,7 @@ double *grid;
 double *new_grid;
 double total_error = 1.0;
 
-pthread_mutex_t chunk_mutex,
-                update_mutex;
-pthread_cond_t chunks_available,
-               chunks_unavailable;
 pthread_barrier_t barrier;
-
-bool allow_thread_processing = false;
 
 // ------------------------------ Utilitary functions ------------------------------
 
@@ -131,14 +128,14 @@ void print_grid(int size) {
     }
 }
 
-int set_first_pos(chunk_info &ck) {
+int set_first_pos(chunk_info *ck) {
 
     int stencil_pos_int, stencil_pos, stencil_row, stencil_col, first_pos;
 
-    stencil_pos_int = (ck.size*ck.id);
+    stencil_pos_int = (ck->size*ck->id);
     stencil_pos = size + 1 + stencil_pos_int/(size-2)*2 + stencil_pos_int;
 
-    ck.first_pos = stencil_pos;
+    ck->first_pos = stencil_pos;
 
     return stencil_pos;
 }
@@ -187,12 +184,16 @@ chunk_info* create_chunks(int n, int size) {
 
     // Input error checking
     if(n <= 0 || size <= 0 || total_points/n == 0)
-        return nullptr;
+        return NULL;
 
-    for(int i = 0; i < n; i++) {
-        chunks[i] = {i, chunk_size, 0, 'u'};
-        set_first_pos(chunks[i]);
+    for (int i = 0; i < n; i++) {
+        chunks[i].id = i;
+        chunks[i].size = chunk_size;
+        chunks[i].local_err = 0;
+        chunks[i].status = 'u';
+        set_first_pos(&chunks[i]);
     }
+
     chunks[n-1].size += (total_points % chunk_size == 0 ? 0 : total_points % chunk_size);
 
     return chunks;
@@ -225,7 +226,6 @@ void producer(thread_data *ptd) {
 double compute_stencil(chunk_info thread_chunk) {
     double err = 0.0;           // Correctude variables
 
-    // double *result = (double*)malloc(thread_chunk.size * sizeof(double));
     int stencil_row, stencil_col, stencil_pos_int, stencil_pos; 
 
     int chunk_size = (((size-2)*(size-2))/n_chunks);
@@ -238,11 +238,12 @@ double compute_stencil(chunk_info thread_chunk) {
         stencil_col = stencil_pos % size;
 
         new_grid[stencil_pos] = 0.25 * (grid[ijTo1D(stencil_row - 1, stencil_col)] +
-                                        grid[ijTo1D(stencil_row + 1, stencil_col)] + 
-                                        grid[ijTo1D(stencil_row, stencil_col - 1)] + 
-                                        grid[ijTo1D(stencil_row, stencil_col + 1)]);
+                            grid[ijTo1D(stencil_row + 1, stencil_col)] + 
+                            grid[ijTo1D(stencil_row, stencil_col - 1)] + 
+                            grid[ijTo1D(stencil_row, stencil_col + 1)]);
 
         err = max(err, absolute(new_grid[stencil_pos] - grid[stencil_pos]));
+
     }
 
     return err;
@@ -301,8 +302,10 @@ int main(int argc, char const *argv[]) {
     int i, j;
 
     // Thread information variable (shared between all threads)
-    thread_data *thread_info = new thread_data[n_threads+1]; 
-    thread_info[0] = {chunks, n_chunks, 0};
+    thread_data *thread_info = malloc((n_threads+1)*sizeof(thread_data)); 
+    thread_info[0].chunks = chunks;
+    thread_info[0].n = n_chunks;
+    thread_info[0].id = 0;
 
     clock_t begin, end;
     double execution_time;
@@ -323,12 +326,6 @@ int main(int argc, char const *argv[]) {
     // Inserting the grid data
     init_grid();
 
-    // Mutex initiation
-    pthread_mutex_init(&chunk_mutex, NULL);
-    // Condition mutex initiation
-    pthread_cond_init(&chunks_available, NULL);
-    pthread_cond_init(&chunks_unavailable, NULL);
-
     int chunk_size = ((size-2)*(size-2))/n_chunks;
 
     // -------------------------------- Processing Area --------------------------------
@@ -340,12 +337,12 @@ int main(int argc, char const *argv[]) {
 
     begin = clock();
 
-    for(int i = 1; i <= n_threads; i++) {
+    for(i = 1; i <= n_threads; i++) {
         // printf("Thread %d created\n", thread_info[i].id);
-        pthread_create(&consumer_Threads[i], nullptr, &consumer, (void*)&(thread_info[i]));
+        pthread_create(&consumer_Threads[i], NULL, &consumer, (void*)&(thread_info[i]));
     }
 
-    for(int i = 1; i <= n_threads; i++) 
+    for(i = 1; i <= n_threads; i++) 
         pthread_join(consumer_Threads[i], NULL);
 
     end = clock();
