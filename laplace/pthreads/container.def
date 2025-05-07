@@ -10,7 +10,7 @@ From: ufscar/ubuntu_mpich:latest
 %post
     echo "Compiling programs..."
     cd /opt && make
-     /usr/bin/
+    cp ./binaries/* /usr/bin/
 
 %runscript
     exec $@
