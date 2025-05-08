@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J laplace_ppd              # Job name
-#SBATCH -p fast                     # Job partition
+#SBATCH -p medium                   # Job partition
 #SBATCH -n 1                        # Number of processes
 #SBATCH -t 01:30:00                 # Run time (hh:mm:ss)
 #SBATCH --mem=8G                    # Memory requirements
@@ -10,14 +10,14 @@
 #SBATCH --mail-type=END             # Notifies the user that the job finished execution
 #SBATCH --mail-user=raphael.santos25@estudante.ufscar.br
 
-size=1000
+size=5000
 
 echo "***************** SEQUENTIAL *****************"
 
-srun singularity run container.sif seq "$size"
-srun singularity run container.sif seq_lin "$size"
-srun singularity run container.sif seq_ptr "$size"
-srun singularity run container.sif seq_linptr "$size"
+srun singularity run container.sif s_laplace "$size"
+srun singularity run container.sif s_laplace_lin "$size"
+srun singularity run container.sif s_laplace_ptr "$size"
+srun singularity run container.sif s_laplace_linptr "$size"
 
 echo "***************** PARALLEL *****************"
 
@@ -30,19 +30,19 @@ do
 done
 
 echo "----------- linear -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif d_laplace_lin "$size" "$run"
 done
 
 echo "----------- pointer -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif d_laplace_ptr "$size" "$run"
 done
 
 echo "----------- linear and pointer -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif d_laplace_linptr "$size" "$run"
 done
@@ -51,25 +51,25 @@ done
 echo "---------------- REGULAR ----------------"
 
 echo "----------- regular -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif r_laplace "$size" "$run"
 done
 
 echo "----------- linear -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif r_laplace_lin "$size" "$run"
 done
 
 echo "----------- pointer -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif r_laplace_ptr "$size" "$run"
 done
 
 echo "----------- linear and pointer -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif r_laplace_linptr "$size" "$run"
 done
@@ -78,25 +78,25 @@ done
 echo "---------------- ROUND ROBIN ----------------"
 
 echo "----------- regular -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif rr_laplace "$size" "$run"
 done
 
 echo "----------- linear -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif rr_laplace_lin "$size" "$run"
 done
 
 echo "----------- pointer -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif rr_laplace_ptr "$size" "$run"
 done
 
 echo "----------- linear and pointer -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif rr_laplace_linptr "$size" "$run"
 done

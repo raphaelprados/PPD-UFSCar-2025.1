@@ -213,9 +213,6 @@ void* thread_manager(void *arg) {
         // Takes continuous rows for processing. Predefined row assignment
         for(i = thread_info->begin; i < thread_info->end; i++) {
             local_error = max(local_error, stencil(i));
-
-            if(debug)
-                printf("[Iter: %d, thread: %d]: error: %.6lf\n", iter, thread_info->id, local_error);
         }
 
         // Prevents false sharing by only updating the buffer once
