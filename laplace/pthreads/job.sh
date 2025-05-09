@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH -J laplace_ppd              # Job name
-#SBATCH -p medium                   # Job partition
+#SBATCH -p fast                     # Job partition
 #SBATCH -n 1                        # Number of processes
-#SBATCH -t 01:30:00                 # Run time (hh:mm:ss)
+#SBATCH -t 12:00:00                 # Run time (hh:mm:ss)
 #SBATCH --mem=8G                    # Memory requirements
 #SBATCH --cpus-per-task=120         # Number of CPUs per process
 #SBATCH --output=%x.%j.out          # Name of stdout output file - %j expands to jobId and %x to jobName
@@ -24,7 +24,7 @@ echo "***************** PARALLEL *****************"
 echo "---------------- DEMAND ----------------"
 
 echo "----------- regular -----------"
-for run in 1 5 10 20 40 80
+for run in 5 10 20 40 80
 do
     srun singularity run container.sif d_laplace "$size" "$run"
 done
